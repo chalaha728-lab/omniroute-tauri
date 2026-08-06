@@ -1,0 +1,143 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OmniRoute",
+  "version": "3.8.49",
+  "identifier": "online.omniroute.desktop",
+  "build": {
+    "beforeDevCommand": "npm run tauri:before-dev",
+    "beforeBuildCommand": "npm run tauri:before-build",
+    "devUrl": "http://localhost:20128",
+    "frontendDist": "../.build/electron-standalone"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OmniRoute",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "visible": false,
+        "decorations": true,
+        "transparent": false,
+        "backgroundColor": "#0a0a0a",
+        "titleBarStyle": "Visible",
+        "hiddenTitle": false,
+        "label": "main",
+        "initializationScript": ""
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "base-uri": "'self'",
+        "object-src": "'none'",
+        "frame-ancestors": "'none'",
+        "frame-src": "'none'",
+        "child-src": "'none'",
+        "form-action": "'self'",
+        "connect-src": "'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:* https://*.omniroute.online https://*.omniroute.dev",
+        "script-src": "'self' 'unsafe-inline' blob:",
+        "script-src-attr": "'none'",
+        "style-src": "'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src": "'self' https://fonts.gstatic.com data:",
+        "img-src": "'self' data: blob: https:",
+        "media-src": "'self' data: blob:",
+        "worker-src": "'self' blob:",
+        "manifest-src": "'self'"
+      },
+      "devtool": false,
+      "freezePrototype": false
+    },
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/tray-icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false,
+      "title": "OmniRoute",
+      "tooltip": "OmniRoute"
+    },
+    "macOSPrivateApi": false,
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": [
+      "resources/*",
+      "preload-shim.iife.js"
+    ],
+    "copyright": "Copyright © 2025 OmniRoute",
+    "category": "Utility",
+    "shortDescription": "OmniRoute Desktop",
+    "longDescription": "OmniRoute is an open-source AI gateway that pools free-tier LLM providers and exposes them through one endpoint.",
+    "externalBin": [
+      "binaries/node"
+    ],
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    },
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.15",
+      "exceptionDomain": "",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": null
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/diegosouzapw/OmniRoute/releases/latest/download/latest.json"
+      ],
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
+    },
+    "shell": {
+      "sidecar": true,
+      "scope": [
+        {
+          "name": "binaries/node",
+          "cmd": "node",
+          "args": [
+            "$RESOURCE/next-server/server.js"
+          ]
+        }
+      ]
+    }
+  }
+}

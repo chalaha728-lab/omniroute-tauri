@@ -1,0 +1,330 @@
+name: Build Tauri Desktop App
+
+# Builds the Tauri 2.x desktop shell for Windows, macOS (Intel + Apple Silicon),
+# and Linux. Uploads installers as workflow artifacts on every run; on tag pushes
+# (v*.*.*) or manual dispatch, also creates/updates a GitHub Release with the
+# installers attached and the updater manifest (latest.json) the Tauri updater
+# polls at runtime.
+#
+# Prerequisites (set in repo Settings → Secrets and variables → Actions):
+#   - TAURI_SIGNING_PRIVATE_KEY       — output of `tauri signer generate -w <path>`
+#   - TAURI_SIGNING_PRIVATE_KEY_PASSWORD — the password you chose (or empty)
+# Without these, the build still produces installers but the in-app auto-updater
+# will refuse to install them (signature verification fails).
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+    paths:
+      - "src-tauri/**"
+      - "scripts/tauri/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/tauri-build.yml"
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "scripts/tauri/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., v3.8.50) — leave blank for artifact-only build"
+        required: false
+        type: string
+      force_release:
+        description: "Create a GitHub Release even on a non-tag ref"
+        required: false
+        type: boolean
+        default: false
+
+# Least-privilege default: read-only at the top level; the release job grants
+# contents: write when it actually needs to upload assets. Scorecard TokenPermissions.
+permissions:
+  contents: read
+
+concurrency:
+  group: tauri-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  RUST_VERSION: stable
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      is_release: ${{ steps.validate.outputs.is_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate version format
+        id: validate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_FORCE: ${{ inputs.force_release }}
+          REF: ${{ github.ref }}
+        run: |
+          VERSION=""
+          IS_RELEASE="false"
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            if [[ "$REF" == refs/tags/v* ]]; then
+              VERSION="${REF#refs/tags/}"
+              IS_RELEASE="true"
+            fi
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -n "$INPUT_VERSION" ]]; then
+              VERSION="$INPUT_VERSION"
+              if [[ "$INPUT_FORCE" == "true" ]]; then
+                IS_RELEASE="true"
+              fi
+            fi
+          fi
+
+          if [[ -n "$VERSION" ]]; then
+            if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "Error: Invalid version format. Expected: v1.6.8 or v1.6.8-rc.1"
+              exit 1
+            fi
+            echo "✓ Valid version: $VERSION"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build Tauri (${{ matrix.label }})
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            sidecar_filter: windows
+            args: --target x86_64-pc-windows-msvc
+            artifact_glob: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          - label: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            sidecar_filter: macos
+            args: --target aarch64-apple-darwin
+            artifact_glob: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+          - label: macos-x64
+            runner: macos-13
+            target: x86_64-apple-darwin
+            sidecar_filter: macos
+            args: --target x86_64-apple-darwin
+            artifact_glob: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+          - label: linux-x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            sidecar_filter: linux
+            args: --target x86_64-unknown-linux-gnu
+            artifact_glob: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Sanitize Windows home directory
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # The default USERPROFILE contains junction points (Application Data)
+          # that cause EPERM errors during Next.js standalone build glob scans.
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "USERPROFILE=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+
+      - name: Install npm dependencies
+        run: npm ci
+        env:
+          NPM_CONFIG_LEGACY_PEER_DEPS: true
+
+      - name: Download Node.js sidecar (current platform only)
+        shell: bash
+        run: node scripts/tauri/download-node-sidecars.mjs --platform ${{ matrix.sidecar_filter }}
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          JWT_SECRET: ci-build-secret-with-sufficient-length-for-validation
+          NODE_OPTIONS: "--max_old_space_size=6144"
+        with:
+          # Don't let the action create the release — we do it in the release job
+          # below so all platforms land in the same release.
+          tagName: ""
+          releaseName: ""
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniroute-tauri-${{ matrix.label }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: [validate, build]
+    if: needs.validate.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: omniroute-tauri-*
+          merge-multiple: false
+
+      - name: Flatten artifacts for release upload
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.dmg" -o \
+            -name "*.AppImage" -o \
+            -name "*.deb" -o \
+            -name "*.app.tar.gz" -o \
+            -name "*.json" \
+          \) -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Check if release already exists (idempotent — supports re-runs)
+          if gh release view "$VERSION" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists — uploading assets"
+            gh release upload "$VERSION" release-assets/* --repo "$REPO" --clobber
+          else
+            echo "Creating release $VERSION"
+            gh release create "$VERSION" \
+              --repo "$REPO" \
+              --title "OmniRoute $VERSION" \
+              --notes "Tauri 2.x desktop build for $VERSION. See CHANGELOG.md for details." \
+              --verify-tag \
+              release-assets/*
+          fi
+
+      - name: Generate latest.json for the auto-updater
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The Tauri updater polls the URL configured in tauri.conf.json:
+          #   https://github.com/<owner>/<repo>/releases/latest/download/latest.json
+          # tauri-action generates this per-platform when it creates the release,
+          # but since we centralized release creation here, we generate a unified
+          # manifest that points each platform to its installer.
+          VERSION_NO_V="${VERSION#v}"
+          PLATFORMS=$(gh release view "$VERSION" --repo "$REPO" --json assets --jq '.assets[].name' | tr '\n' ' ')
+          cat > latest.json <<EOF
+          {
+            "version": "$VERSION_NO_V",
+            "notes": "OmniRoute $VERSION",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "x86_64-pc-windows-msvc": {
+                "url": "https://github.com/$REPO/releases/download/$VERSION/OmniRoute_$VERSION_NO_V_x64-setup.exe"
+              },
+              "aarch64-apple-darwin": {
+                "url": "https://github.com/$REPO/releases/download/$VERSION/OmniRoute.app.tar.gz"
+              },
+              "x86_64-apple-darwin": {
+                "url": "https://github.com/$REPO/releases/download/$VERSION/OmniRoute.app.tar.gz"
+              },
+              "x86_64-unknown-linux-gnu": {
+                "url": "https://github.com/$REPO/releases/download/$VERSION/omniroute_${VERSION_NO_V}_amd64.AppImage"
+              }
+            }
+          }
+          EOF
+          gh release upload "$VERSION" latest.json --repo "$REPO" --clobber
+          echo "✓ latest.json uploaded — auto-updater will find it at:"
+          echo "  https://github.com/$REPO/releases/latest/download/latest.json"
