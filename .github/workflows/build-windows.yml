@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: diegosouzapw/OmniRoute
-          ref: main
+          ref: v3.8.49
           path: omniroute
           fetch-depth: 1
 
