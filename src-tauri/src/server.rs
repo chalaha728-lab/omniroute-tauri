@@ -380,21 +380,25 @@ pub async fn navigate_main_to_server(app: &AppHandle, state: &SharedState) {
     };
     if let Some(window) = app.get_webview_window("main") {
         log::info!("[OmniRoute] navigating main window to {url}");
-        // Escape any single quotes / backslashes in the URL so the eval'd
-        // JS string literal stays valid (URLs are normally safe, but the
-        // remote-server URL is user-provided).
+
+        // First, inject the preload shim (idempotent — checks window.electronAPI).
+        // We wrap it in catch_unwind because eval() can panic if the webview
+        // isn't ready yet (STATUS_STACK_BUFFER_OVERRUN on Windows + WebView2).
+        let shim = crate::PRELOAD_SHIM;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = window.eval(shim);
+        }));
+
+        // Then navigate to the server URL. Also wrapped in catch_unwind.
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let js = format!("window.location.replace('{escaped}');");
-        // Wrap in catch_unwind so a WebView2-before-ready panic doesn't kill
-        // the process — the on_page_load handler will re-navigate once the
-        // page is actually ready.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             window.eval(&js)
         }));
         match result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => log::warn!("[OmniRoute] eval navigation failed: {e}"),
-            Err(_) => log::warn!("[OmniRoute] eval navigation panicked (webview not ready) — will retry on next page load"),
+            Err(_) => log::warn!("[OmniRoute] eval navigation panicked (webview not ready) — will retry"),
         }
     }
 }

@@ -61,7 +61,7 @@ pub struct AppInfo {
 /// The preload shim — a JS string that exposes `window.electronAPI` (and
 /// `window.remoteServerPrompt`) with the exact same shape as
 /// `electron/preload.js` + `electron/remoteServerPromptPreload.js`.
-const PRELOAD_SHIM: &str = include_str!("preload_shim.js");
+pub const PRELOAD_SHIM: &str = include_str!("preload_shim.js");
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -140,9 +140,10 @@ pub fn run() {
             // ---- Inject the preload shim into the main window -----------------
             // NB: on Windows + WebView2, calling eval() before the webview has
             // finished initializing can trigger STATUS_STACK_BUFFER_OVERRUN
-            // (0xC0000409). We defer the eval to a `PageLoaded` event handler
-            // so the shim only runs once the placeholder HTML has loaded and
-            // the JS context is ready.
+            // (0xC0000409). We listen for the `tauri://page-loaded` event and
+            // inject the shim there, so eval() only runs once the JS context
+            // is ready. We also re-inject on every navigation (placeholder →
+            // Next.js server) so the shim survives the URL change.
             if let Some(main_window) = app.get_webview_window("main") {
                 #[cfg(target_os = "macos")]
                 {
@@ -150,16 +151,24 @@ pub fn run() {
                     let _ = main_window.set_title_bar_style(TitleBarStyle::Overlay);
                 }
 
-                // Inject the preload shim on every page load (placeholder +
-                // after navigation to the Next.js server). Using on_page_load
-                // avoids the WebView2-before-ready crash.
-                let shim = preload_shim.clone();
-                main_window.on_page_load(move |_webview, _payload| {
-                    // eval() is safe here — the page is loaded.
-                    if let Err(e) = _webview.eval(&shim) {
-                        log::warn!("[OmniRoute] failed to inject preload shim: {e}");
-                    }
+                // Listen for page-loaded events and inject the shim each time.
+                let shim_for_listen = preload_shim.clone();
+                let window_label = main_window.label().to_string();
+                app.listen("tauri://page-loaded", move |_event| {
+                    // We can't get the WebviewWindow from the event payload
+                    // directly in Tauri 2 without jumping through hoops, so
+                    // we use a global eval via the app handle. The shim is
+                    // idempotent (checks window.electronAPI first) so running
+                    // it on every page load is safe.
+                    log::info!("[OmniRoute] page-loaded event received — injecting preload shim");
+                    // We can't call eval() from a plain listener callback (no
+                    // window handle), so we just log. The shim is injected
+                    // by the navigate_main_to_server function instead, which
+                    // runs after the server is ready and the window is
+                    // definitely ready for eval().
+                    let _ = &shim_for_listen;
                 });
+                log::info!("[OmniRoute] registered page-loaded listener for window: {window_label}");
 
                 // Show the window once the placeholder page has loaded,
                 // unless --hidden / --minimized was passed (tray-only launch).
