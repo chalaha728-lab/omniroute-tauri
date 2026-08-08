@@ -1,5 +1,6 @@
 # Per-project cargo configuration for the OmniRoute Tauri port.
-#
+
+# ── Linux ─────────────────────────────────────────────────────────────────
 # On Linux, `libdbus-1.a` (pulled in transitively by webkit2gtk-4.1)
 # references `sd_listen_fds` and `sd_is_socket`, which live in libsystemd.
 # On a normal Debian/Ubuntu install with `apt-get install
@@ -8,3 +9,13 @@
 # link step succeeds.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-lsystemd"]
+
+# ── Windows ───────────────────────────────────────────────────────────────
+# Statically link the MSVC C runtime (CRT) so the .exe doesn't depend on
+# VCRUNTIME140.dll / MSVCP140.dll being installed on the user's machine.
+# Without this, a fresh Windows install that lacks the "Visual C++
+# Redistributable 2015-2022 (x64)" will crash on launch with:
+#   "The code execution cannot proceed because VCRUNTIME140.dll was not found"
+# or silently exit. Static linking eliminates that dependency entirely.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
