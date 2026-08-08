@@ -97,10 +97,6 @@ jobs:
       - name: Build OmniRoute Next.js standalone
         shell: pwsh
         working-directory: omniroute
-        env:
-          # Skip the PWA / doc generation steps that aren't needed for the
-          # desktop bundle and slow down the build.
-          OMNIROUTE_BUILD_PROFILE: minimal
         run: |
           Write-Host "Running npm run build (this takes ~5-10 min)..."
           npm run build
