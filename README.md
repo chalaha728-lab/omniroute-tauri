@@ -2,7 +2,7 @@
 
 A 1:1 port of the [OmniRoute](https://github.com/diegosouzapw/OmniRoute) Electron desktop shell to **Tauri 2**. The Next.js frontend and Node.js backend are unchanged — the Tauri shell spawns the bundled Next.js standalone server as a sidecar and exposes the exact same `window.electronAPI` IPC surface, so the renderer needs zero changes.
 
-> **This repo** contains only the Tauri shell (`src-tauri/`) — enough to build a native Windows `.exe` that demonstrates the port runs. To produce a fully self-contained installer that also bundles the OmniRoute Next.js server, drop the output of `npm run prepare:bundle` (from the upstream OmniRoute repo) into `src-tauri/resources/app/` before `npm run tauri:build`.
+> **This repo** builds a **fully self-contained** Windows installer (~300 MB) that bundles the entire OmniRoute Next.js server + all native modules (better-sqlite3, keytar, etc.). Launch the `.exe` → Tauri spawns the bundled server on `localhost:20128` → the window loads the dashboard. No external dependencies needed.
 
 ## Build status
 

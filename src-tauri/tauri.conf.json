@@ -53,7 +53,8 @@
     ],
     "resources": [
       "resources/placeholder/index.html",
-      "resources/remoteServerPrompt.html"
+      "resources/remoteServerPrompt.html",
+      "resources/app/**/*"
     ],
     "copyright": "Copyright © 2025 OmniRoute",
     "category": "Utility",

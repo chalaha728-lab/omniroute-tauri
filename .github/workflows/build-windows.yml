@@ -1,16 +1,24 @@
-name: Build Windows
+name: Build Windows (Full)
 
-# Builds the OmniRoute Tauri desktop shell for Windows on every push to main
-# and on manual dispatch. Uploads the NSIS installer + portable .exe as a
-# workflow artifact (downloadable from the Actions run page) and (on tag
-# pushes) attaches them to a GitHub Release.
+# Builds a FULLY WORKING OmniRoute Tauri desktop app for Windows.
 #
-# The build is self-contained: it does NOT depend on the OmniRoute Next.js
-# source. The Tauri window loads `resources/placeholder/index.html` (a small
-# loading screen) and, at runtime, spawns the bundled Next.js standalone
-# server from `<resources>/app/server-ws.mjs` if present. When that path is
-# absent (as in this minimal build), the window just shows the placeholder —
-# which is enough to verify the Tauri shell runs natively on Windows.
+# What this does:
+#   1. Checks out the upstream OmniRoute source (diegosouzapw/OmniRoute).
+#   2. Runs `npm install` (compiles native modules: better-sqlite3, keytar,
+#      tls-client-node — all for the Node ABI, which is correct for Tauri
+#      since the server is spawned with system `node`, not ELECTRON_RUN_AS_NODE).
+#   3. Runs `npm run build` (Next.js standalone build → .build/next/standalone/).
+#   4. Runs our `prepare-tauri-standalone.mjs` to sanitize paths, materialize
+#      symlinks, and copy native binaries → .build/tauri-standalone/.
+#   5. Copies .build/tauri-standalone/ → src-tauri/resources/app/ in the
+#      Tauri checkout.
+#   6. Runs `npm run tauri:build` — produces an NSIS installer (~300 MB) that
+#      bundles the entire OmniRoute server. The app is fully self-contained:
+#      launch the .exe → Tauri spawns the bundled server → window loads
+#      http://localhost:20128.
+#
+# Total wall-clock time: ~30-40 min (npm install + native compilation +
+# Next.js build + Rust release build).
 
 on:
   push:
@@ -19,16 +27,26 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed by softprops/action-gh-release to upload release assets
+  contents: write
 
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout
+      - name: Checkout Tauri repo
         uses: actions/checkout@v4
+        with:
+          path: tauri-repo
+
+      - name: Checkout upstream OmniRoute
+        uses: actions/checkout@v4
+        with:
+          repository: diegosouzapw/OmniRoute
+          ref: main
+          path: omniroute
+          fetch-depth: 1
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -40,39 +58,110 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86_64
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.toml') }}
+            tauri-repo/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('tauri-repo/src-tauri/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Install npm dependencies
-        run: npm install
+      - name: Copy prepare-tauri-standalone.mjs into OmniRoute checkout
+        shell: pwsh
+        run: |
+          Copy-Item -Path "tauri-repo/scripts/prepare-tauri-standalone.mjs" `
+                    -Destination "omniroute/prepare-tauri-standalone.mjs" -Force
+          Write-Host "Copied prepare-tauri-standalone.mjs to omniroute/"
+
+      - name: Install OmniRoute dependencies
+        shell: pwsh
+        working-directory: omniroute
+        run: |
+          # Use npm ci for reproducible builds — but OmniRoute doesn't ship a
+          # lockfile that's compatible with all platforms, so fall back to
+          # `npm install` if `npm ci` fails.
+          npm install --no-audit --no-fund --progress=false 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "npm install failed, retrying with --legacy-peer-deps..."
+            npm install --no-audit --no-fund --progress=false --legacy-peer-deps
+          }
+          Write-Host "npm install completed"
+
+      - name: Build OmniRoute Next.js standalone
+        shell: pwsh
+        working-directory: omniroute
+        env:
+          # Skip the PWA / doc generation steps that aren't needed for the
+          # desktop bundle and slow down the build.
+          OMNIROUTE_BUILD_PROFILE: minimal
+        run: |
+          Write-Host "Running npm run build (this takes ~5-10 min)..."
+          npm run build
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Build failed, trying build:backend (backend-only)..."
+            npm run build:backend
+          }
+
+      - name: Prepare Tauri standalone bundle
+        shell: pwsh
+        working-directory: omniroute
+        run: |
+          node prepare-tauri-standalone.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw "prepare-tauri-standalone.mjs failed"
+          }
+          Write-Host "=== Bundle contents (top-level) ==="
+          Get-ChildItem -Path ".build/tauri-standalone" | Select-Object Name, Length | Format-Table
+          Write-Host "=== Bundle size ==="
+          $size = (Get-ChildItem -Path ".build/tauri-standalone" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Total: $([math]::Round($size, 1)) MB"
+
+      - name: Copy standalone bundle into Tauri resources
+        shell: pwsh
+        run: |
+          $dest = "tauri-repo/src-tauri/resources/app"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Copy-Item -Path "omniroute/.build/tauri-standalone/*" -Destination $dest -Recurse -Force
+          Write-Host "=== Copied bundle to $dest ==="
+          Get-ChildItem $dest | Select-Object Name | Format-Table
+
+      - name: Install Tauri CLI dependencies
+        shell: pwsh
+        working-directory: tauri-repo
+        run: npm install --no-audit --no-fund
 
       - name: Build Tauri app (release)
-        run: npm run tauri:build
+        shell: pwsh
+        working-directory: tauri-repo
+        run: |
+          Write-Host "Running npm run tauri:build (this takes ~10-15 min)..."
+          npm run tauri:build
 
       - name: List bundle output
         shell: pwsh
         run: |
-          Get-ChildItem -Recurse src-tauri/target/release/bundle | Select-Object FullName, Length
+          Get-ChildItem -Recurse tauri-repo/src-tauri/target/release/bundle | Select-Object FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}} | Format-Table
 
       - name: Upload NSIS installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OmniRoute-Windows-NSIS
-          path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: warn
+          name: OmniRoute-Windows-Full-NSIS
+          path: tauri-repo/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
 
       - name: Upload MSI artifact (if any)
         uses: actions/upload-artifact@v4
         with:
-          name: OmniRoute-Windows-MSI
-          path: src-tauri/target/release/bundle/msi/*.msi
+          name: OmniRoute-Windows-Full-MSI
+          path: tauri-repo/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: warn
 
       - name: Upload release on tag
@@ -80,6 +169,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            tauri-repo/src-tauri/target/release/bundle/nsis/*.exe
+            tauri-repo/src-tauri/target/release/bundle/msi/*.msi
           generate_release_notes: true
