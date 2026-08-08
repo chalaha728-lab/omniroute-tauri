@@ -69,6 +69,28 @@ pub fn run() {
         .format_timestamp_secs()
         .init();
 
+    // Install a panic hook that logs the panic instead of letting it crash
+    // the process silently. This turns the 0xC0000409 (STACK_BUFFER_OVERRUN)
+    // crash into a log entry we can diagnose, and keeps the process alive
+    // where possible.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        log::error!("[OmniRoute PANIC] at {location}: {payload}");
+        // Also call the default hook so we still get a backtrace on stderr
+        // if RUST_BACKTRACE=1.
+        default_hook(info);
+    }));
+
     let preload_shim = PRELOAD_SHIM.to_string();
 
     tauri::Builder::default()
@@ -116,15 +138,28 @@ pub fn run() {
             );
 
             // ---- Inject the preload shim into the main window -----------------
+            // NB: on Windows + WebView2, calling eval() before the webview has
+            // finished initializing can trigger STATUS_STACK_BUFFER_OVERRUN
+            // (0xC0000409). We defer the eval to a `PageLoaded` event handler
+            // so the shim only runs once the placeholder HTML has loaded and
+            // the JS context is ready.
             if let Some(main_window) = app.get_webview_window("main") {
-                if let Err(e) = main_window.eval(&preload_shim) {
-                    log::warn!("[OmniRoute] failed to inject preload shim: {e}");
-                }
                 #[cfg(target_os = "macos")]
                 {
                     use tauri::TitleBarStyle;
                     let _ = main_window.set_title_bar_style(TitleBarStyle::Overlay);
                 }
+
+                // Inject the preload shim on every page load (placeholder +
+                // after navigation to the Next.js server). Using on_page_load
+                // avoids the WebView2-before-ready crash.
+                let shim = preload_shim.clone();
+                main_window.on_page_load(move |_webview, _payload| {
+                    // eval() is safe here — the page is loaded.
+                    if let Err(e) = _webview.eval(&shim) {
+                        log::warn!("[OmniRoute] failed to inject preload shim: {e}");
+                    }
+                });
 
                 // Show the window once the placeholder page has loaded,
                 // unless --hidden / --minimized was passed (tray-only launch).

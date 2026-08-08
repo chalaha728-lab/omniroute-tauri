@@ -385,8 +385,16 @@ pub async fn navigate_main_to_server(app: &AppHandle, state: &SharedState) {
         // remote-server URL is user-provided).
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let js = format!("window.location.replace('{escaped}');");
-        if let Err(e) = window.eval(&js) {
-            log::warn!("[OmniRoute] eval navigation failed: {e}");
+        // Wrap in catch_unwind so a WebView2-before-ready panic doesn't kill
+        // the process — the on_page_load handler will re-navigate once the
+        // page is actually ready.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            window.eval(&js)
+        }));
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log::warn!("[OmniRoute] eval navigation failed: {e}"),
+            Err(_) => log::warn!("[OmniRoute] eval navigation panicked (webview not ready) — will retry on next page load"),
         }
     }
 }
