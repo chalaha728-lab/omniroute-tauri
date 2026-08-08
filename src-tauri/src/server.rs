@@ -31,9 +31,11 @@ impl ServerHandle {
     pub async fn kill_tree(&mut self) -> Result<()> {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
             let _ = Command::new("taskkill")
                 .args(["/PID", &self.pid.to_string(), "/T", "/F"])
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .creation_flags(CREATE_NO_WINDOW)
                 .status()
                 .await;
             let _ = self.child.kill().await;
