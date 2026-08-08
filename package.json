@@ -1,0 +1,16 @@
+{
+  "name": "omniroute-tauri",
+  "version": "3.8.50",
+  "description": "OmniRoute desktop shell — Tauri 2 port of the Electron build.",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:debug": "tauri build --debug"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

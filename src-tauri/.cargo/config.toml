@@ -1,0 +1,10 @@
+# Per-project cargo configuration for the OmniRoute Tauri port.
+#
+# On Linux, `libdbus-1.a` (pulled in transitively by webkit2gtk-4.1)
+# references `sd_listen_fds` and `sd_is_socket`, which live in libsystemd.
+# On a normal Debian/Ubuntu install with `apt-get install
+# libwebkit2gtk-4.1-dev`, the pkg-config chain pulls libsystemd in
+# automatically. On minimal sysroots we have to be explicit so the final
+# link step succeeds.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-lsystemd"]
