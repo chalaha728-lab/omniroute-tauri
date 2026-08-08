@@ -378,23 +378,28 @@ pub async fn navigate_main_to_server(app: &AppHandle, state: &SharedState) {
             format!("http://localhost:{}", s.port)
         }
     };
-    if let Some(window) = app.get_webview_window("main") {
-        log::info!("[OmniRoute] navigating main window to {url}");
+    log::info!("[OmniRoute] navigate_main_to_server called with url={url}");
 
-        // Give the webview time to finish initializing before we call eval().
-        // On Windows + WebView2, calling eval() too early in the app lifecycle
-        // triggers STATUS_STACK_BUFFER_OVERRUN (0xC0000409) — a Windows SEH
-        // exception that catch_unwind cannot intercept because it fires in
-        // the MSVC /GS stack-canary check, below the Rust panic layer.
+    // DIAGNOSTIC: temporarily skip eval() entirely to confirm whether eval()
+    // is the cause of the 0xC0000409 crash. If the process stays alive with
+    // this skip in place, we know eval() is the culprit and need to find a
+    // different navigation mechanism.
+    if std::env::var("OMNIROUTE_SKIP_EVAL").as_deref() == Ok("1") {
+        log::info!("[OmniRoute] OMNIROUTE_SKIP_EVAL=1 — skipping eval() navigation");
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        // Give the webview time to finish initializing.
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        // Inject the preload shim (idempotent — checks window.electronAPI).
+        // Inject the preload shim (idempotent).
         let shim = crate::PRELOAD_SHIM;
         if let Err(e) = window.eval(shim) {
             log::warn!("[OmniRoute] preload shim eval failed: {e}");
         }
 
-        // Navigate to the server URL via JS redirect.
+        // Navigate via JS redirect.
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let js = format!("window.location.replace('{escaped}');");
         if let Err(e) = window.eval(&js) {

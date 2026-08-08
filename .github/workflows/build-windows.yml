@@ -230,7 +230,8 @@ jobs:
           }
 
           # Launch the app and watch for crashes
-          Write-Host "=== Launching OmniRoute.exe ==="
+          Write-Host "=== Launching OmniRoute.exe (with OMNIROUTE_SKIP_EVAL=1 for diagnosis) ==="
+          $env:OMNIROUTE_SKIP_EVAL = "1"
           $app = Start-Process -FilePath $exe.FullName -PassThru
           Write-Host "Started PID: $($app.Id)"
 
