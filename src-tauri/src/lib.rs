@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Listener, Manager, WindowEvent};
 use tokio::runtime::Handle;
 
 use crate::state::{initial_state, AppState, SharedState};
