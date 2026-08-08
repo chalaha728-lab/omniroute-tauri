@@ -381,24 +381,24 @@ pub async fn navigate_main_to_server(app: &AppHandle, state: &SharedState) {
     if let Some(window) = app.get_webview_window("main") {
         log::info!("[OmniRoute] navigating main window to {url}");
 
-        // First, inject the preload shim (idempotent — checks window.electronAPI).
-        // We wrap it in catch_unwind because eval() can panic if the webview
-        // isn't ready yet (STATUS_STACK_BUFFER_OVERRUN on Windows + WebView2).
-        let shim = crate::PRELOAD_SHIM;
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = window.eval(shim);
-        }));
+        // Give the webview time to finish initializing before we call eval().
+        // On Windows + WebView2, calling eval() too early in the app lifecycle
+        // triggers STATUS_STACK_BUFFER_OVERRUN (0xC0000409) — a Windows SEH
+        // exception that catch_unwind cannot intercept because it fires in
+        // the MSVC /GS stack-canary check, below the Rust panic layer.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        // Then navigate to the server URL. Also wrapped in catch_unwind.
+        // Inject the preload shim (idempotent — checks window.electronAPI).
+        let shim = crate::PRELOAD_SHIM;
+        if let Err(e) = window.eval(shim) {
+            log::warn!("[OmniRoute] preload shim eval failed: {e}");
+        }
+
+        // Navigate to the server URL via JS redirect.
         let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
         let js = format!("window.location.replace('{escaped}');");
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            window.eval(&js)
-        }));
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => log::warn!("[OmniRoute] eval navigation failed: {e}"),
-            Err(_) => log::warn!("[OmniRoute] eval navigation panicked (webview not ready) — will retry"),
+        if let Err(e) = window.eval(&js) {
+            log::warn!("[OmniRoute] eval navigation failed: {e}");
         }
     }
 }

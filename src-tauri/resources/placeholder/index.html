@@ -78,44 +78,8 @@
       <p id="status">Booting the embedded server. This usually takes a few seconds; the first launch may take longer while database migrations run.</p>
       <p class="error" id="error"></p>
     </div>
-    <script>
-      // The Rust main process emits `server-status` events on the `main` window.
-      // While the window is still pointing at this placeholder document, we
-      // surface those events so the user sees live progress instead of a frozen
-      // spinner.
-      (async function () {
-        const errorEl = document.getElementById("error");
-        const statusEl = document.getElementById("status");
-        try {
-          const { listen } = await window.__TAURI__.event;
-          await listen("server-status", (event) => {
-            const payload = event.payload || {};
-            const status = payload.status;
-            const port = payload.port;
-            const remoteUrl = payload.remoteUrl;
-            if (status === "starting") {
-              statusEl.textContent = remoteUrl
-                ? `Connecting to remote server at ${remoteUrl}…`
-                : `Starting embedded server on port ${port}…`;
-            } else if (status === "restarting") {
-              statusEl.textContent = `Restarting server on port ${port}…`;
-            } else if (status === "running") {
-              statusEl.textContent = remoteUrl
-                ? `Connected to ${remoteUrl}.`
-                : `Server ready on port ${port}. Loading dashboard…`;
-            } else if (status === "stopped") {
-              statusEl.textContent = "Server stopped.";
-            } else if (status === "error") {
-              errorEl.style.display = "block";
-              errorEl.textContent =
-                "The embedded server failed to start. Check the logs and restart OmniRoute.";
-            }
-          });
-        } catch (err) {
-          // __TAURI__ not yet available — the placeholder will be replaced by
-          // the real Next.js page as soon as the server is ready.
-        }
-      })();
-    </script>
+    <!-- No JavaScript — the Rust main process navigates this window to the
+         server URL via eval() once the server is ready. Keeping this page
+         JS-free avoids any WebView2-before-ready crashes. -->
   </body>
 </html>

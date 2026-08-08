@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Listener, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tokio::runtime::Handle;
 
 use crate::state::{initial_state, AppState, SharedState};
@@ -91,8 +91,6 @@ pub fn run() {
         default_hook(info);
     }));
 
-    let preload_shim = PRELOAD_SHIM.to_string();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
@@ -137,13 +135,12 @@ pub fn run() {
                 remote_server_url
             );
 
-            // ---- Inject the preload shim into the main window -----------------
-            // NB: on Windows + WebView2, calling eval() before the webview has
-            // finished initializing can trigger STATUS_STACK_BUFFER_OVERRUN
-            // (0xC0000409). We listen for the `tauri://page-loaded` event and
-            // inject the shim there, so eval() only runs once the JS context
-            // is ready. We also re-inject on every navigation (placeholder →
-            // Next.js server) so the shim survives the URL change.
+            // ---- Window setup ---------------------------------------------------
+            // NB: We do NOT call eval() here — calling it before WebView2 has
+            // finished initializing triggers STATUS_STACK_BUFFER_OVERRUN
+            // (0xC0000409) on Windows. The preload shim is injected later,
+            // in navigate_main_to_server(), after the server is ready and
+            // the webview is definitely ready for eval().
             if let Some(main_window) = app.get_webview_window("main") {
                 #[cfg(target_os = "macos")]
                 {
@@ -151,27 +148,7 @@ pub fn run() {
                     let _ = main_window.set_title_bar_style(TitleBarStyle::Overlay);
                 }
 
-                // Listen for page-loaded events and inject the shim each time.
-                let shim_for_listen = preload_shim.clone();
-                let window_label = main_window.label().to_string();
-                app.listen("tauri://page-loaded", move |_event| {
-                    // We can't get the WebviewWindow from the event payload
-                    // directly in Tauri 2 without jumping through hoops, so
-                    // we use a global eval via the app handle. The shim is
-                    // idempotent (checks window.electronAPI first) so running
-                    // it on every page load is safe.
-                    log::info!("[OmniRoute] page-loaded event received — injecting preload shim");
-                    // We can't call eval() from a plain listener callback (no
-                    // window handle), so we just log. The shim is injected
-                    // by the navigate_main_to_server function instead, which
-                    // runs after the server is ready and the window is
-                    // definitely ready for eval().
-                    let _ = &shim_for_listen;
-                });
-                log::info!("[OmniRoute] registered page-loaded listener for window: {window_label}");
-
-                // Show the window once the placeholder page has loaded,
-                // unless --hidden / --minimized was passed (tray-only launch).
+                // Show the window unless --hidden / --minimized was passed.
                 let hidden_requested =
                     std::env::args().any(|a| a == "--hidden" || a == "--minimized");
                 if !hidden_requested {
