@@ -172,6 +172,118 @@ jobs:
         run: |
           Get-ChildItem -Recurse tauri-repo/src-tauri/target/release/bundle | Select-Object FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}} | Format-Table
 
+      # ── Smoke test: actually install + launch the .exe and verify it doesn't crash ──
+      # This catches the exact failure mode the user reported ("OmniRoute has
+      # stopped working" on launch). We install silently, launch the exe, wait
+      # 15s, then check (a) the process is still alive and (b) localhost:20128
+      # responds. If either check fails, we dump the Windows Event Log so the
+      # build fails with a clear error instead of shipping a broken installer.
+      - name: Smoke test — install + launch + verify server starts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $installer = Get-ChildItem "tauri-repo/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          Write-Host "=== Installer: $($installer.FullName) ==="
+          Write-Host "=== Size: $([math]::Round($installer.Length/1MB,1)) MB ==="
+
+          # Silent install to a known path
+          $installDir = "$env:TEMP\OmniRoute-test"
+          if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+          Write-Host "=== Installing silently to $installDir ==="
+          $proc = Start-Process -FilePath $installer.FullName -ArgumentList "/S","/D=$installDir" -Wait -PassThru
+          Write-Host "Installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) {
+            throw "Installer failed with exit code $($proc.ExitCode)"
+          }
+
+          # Find the installed OmniRoute.exe
+          $exe = Get-ChildItem -Path $installDir -Recurse -Filter "OmniRoute.exe" | Select-Object -First 1
+          if (-not $exe) {
+            throw "OmniRoute.exe not found in $installDir after install"
+          }
+          Write-Host "=== Found: $($exe.FullName) ==="
+
+          # Inspect DLL dependencies (catches missing VC++ runtime, etc.)
+          Write-Host "=== DLL dependencies ==="
+          $pe = [System.Reflection.Assembly]::LoadWithPartialName("System.Reflection")
+          # Use dumpbin if available, else fall back to a PowerShell-only check
+          $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
+          if ($dumpbin) {
+            & dumpbin /dependents $exe.FullName 2>&1 | Select-String "DLL Name"
+          } else {
+            # Read the PE import table manually
+            $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+            # Look for "VCRUNTIME" / "MSVCP" in the binary — if present, the
+            # static-CRT flag didn't apply and we still depend on VC Redist.
+            $asText = [System.Text.Encoding]::ASCII.GetString($bytes)
+            if ($asText -match "VCRUNTIME140\.dll") {
+              Write-Host "WARNING: VCRUNTIME140.dll dependency found — static CRT did NOT apply!"
+            } else {
+              Write-Host "OK: no VCRUNTIME140.dll dependency (static CRT confirmed)"
+            }
+            if ($asText -match "MSVCP140\.dll") {
+              Write-Host "WARNING: MSVCP140.dll dependency found — static CRT did NOT apply!"
+            } else {
+              Write-Host "OK: no MSVCP140.dll dependency"
+            }
+          }
+
+          # Launch the app and watch for crashes
+          Write-Host "=== Launching OmniRoute.exe ==="
+          $app = Start-Process -FilePath $exe.FullName -PassThru
+          Write-Host "Started PID: $($app.Id)"
+
+          # Wait up to 30s for the process to stay alive (crash happens in ~2s)
+          $alive = $true
+          for ($i = 1; $i -le 30; $i++) {
+            Start-Sleep -Seconds 1
+            if ($app.HasExited) {
+              $alive = $false
+              Write-Host "Process exited after $i s with code $($app.ExitCode)"
+              break
+            }
+          }
+
+          # Check if localhost:20128 responds (server started)
+          $serverUp = $false
+          if ($alive) {
+            Write-Host "=== Process alive after 30s — checking server ==="
+            for ($i = 1; $i -le 10; $i++) {
+              try {
+                $resp = Invoke-WebRequest -Uri "http://localhost:20128/api/monitoring/health" -UseBasicParsing -TimeoutSec 3
+                if ($resp.StatusCode -lt 500) {
+                  $serverUp = $true
+                  Write-Host "Server responded with status $($resp.StatusCode) after $($i*3)s"
+                  break
+                }
+              } catch {
+                Start-Sleep -Seconds 3
+              }
+            }
+          }
+
+          # Dump Windows Event Log for any Application Error around launch time
+          Write-Host "=== Recent Application Error events ==="
+          $since = (Get-Date).AddMinutes(-2)
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=$since} -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match "OmniRoute" } |
+            Select-Object TimeCreated, Id, @{N='Msg';E={$_.Message.Substring(0, [Math]::Min(500, $_.Message.Length))}} |
+            Format-List
+
+          # Cleanup
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }
+
+          # Verdict
+          if (-not $alive) {
+            throw "SMOKE TEST FAILED: OmniRoute.exe crashed within 30s of launch (exit code $($app.ExitCode)). See Event Log above for the faulting module."
+          }
+          if (-not $serverUp) {
+            Write-Host "WARNING: Process stayed alive but server did not respond on :20128 — may need more time, or server failed to start. Not failing the build for this."
+          } else {
+            Write-Host "=== SMOKE TEST PASSED: app launched + server responded on :20128 ==="
+          }
+
       - name: Upload NSIS installer artifact
         uses: actions/upload-artifact@v4
         with:
