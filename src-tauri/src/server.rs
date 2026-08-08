@@ -151,7 +151,7 @@ pub async fn startup_sequence(app: &AppHandle, state: SharedState) -> Result<()>
 pub async fn spawn_server(app: &AppHandle, env: &HashMap<String, String>) -> Result<ServerHandle> {
     let server_dir = resolve_server_dir(app)?;
     let server_script = resolve_server_entry(&server_dir)?;
-    let node_exe = resolve_node_executable();
+    let node_exe = resolve_node_executable_with_app(app);
 
     log::info!(
         "[OmniRoute] starting Next.js server: {} {} (cwd={})",
@@ -220,6 +220,15 @@ pub fn fetch_state(app: &AppHandle) -> SharedState {
     state.inner().clone()
 }
 
+/// Resolve the Node.js executable to use for spawning the server.
+///
+/// Precedence (mirrors the Electron build's `resolveNodeExecutable()`):
+///   1. `OMNIROUTE_NODE_PATH` env var (explicit override — operator/developer)
+///   2. `<resources>/app/node/node.exe` (Windows) or `<resources>/app/node/bin/node`
+///      (macOS/Linux) — a portable Node.js build bundled as a Tauri resource
+///      so the app is fully self-contained (no system Node required)
+///   3. `node` on PATH (last resort — for dev mode or operators who prefer
+///      their system Node)
 pub fn resolve_node_executable() -> String {
     if let Ok(path) = std::env::var("OMNIROUTE_NODE_PATH") {
         let trimmed = path.trim();
@@ -228,6 +237,47 @@ pub fn resolve_node_executable() -> String {
         }
     }
     "node".to_string()
+}
+
+/// Same as `resolve_node_executable` but takes the AppHandle so it can
+/// resolve the bundled Node binary inside Tauri's resource directory.
+/// This is the version actually used by `spawn_server` — the bundled
+/// binary takes precedence over `node` on PATH so the app is self-contained.
+pub fn resolve_node_executable_with_app(app: &AppHandle) -> String {
+    // 1. Explicit env override
+    if let Ok(path) = std::env::var("OMNIROUTE_NODE_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    // 2. Bundled portable Node.js in <resources>/app/node/
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let candidates = bundled_node_paths(&resource_dir);
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // 3. System Node on PATH (last resort)
+    "node".to_string()
+}
+
+/// Platform-specific paths where the bundled portable Node.js lives.
+fn bundled_node_paths(resource_dir: &Path) -> Vec<PathBuf> {
+    let base = resource_dir.join("app").join("node");
+    vec![
+        // Windows portable: node-v22.11.0-win-x64/node.exe
+        base.join("node.exe"),
+        base.join("bin").join("node.exe"),
+        // macOS / Linux portable tarball layout: bin/node
+        base.join("bin").join("node"),
+        // Flat layout (some portable builds)
+        base.join("node"),
+    ]
 }
 
 pub async fn wait_for_server(url: &str, timeout_duration: Duration) -> bool {

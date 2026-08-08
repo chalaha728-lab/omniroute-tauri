@@ -129,6 +129,32 @@ jobs:
           Write-Host "=== Copied bundle to $dest ==="
           Get-ChildItem $dest | Select-Object Name | Format-Table
 
+      - name: Download + bundle portable Node.js (so the app is fully self-contained)
+        shell: pwsh
+        run: |
+          $nodeVersion = "v22.11.0"
+          $url = "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip"
+          Write-Host "Downloading $url ..."
+          $zip = "$env:TEMP\node-portable.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          $extract = "$env:TEMP\node-portable"
+          if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          # The zip extracts to node-v22.11.0-win-x64\node.exe + a bunch of
+          # stuff. Copy just node.exe + node_modules/npm into resources/app/node/
+          # so the bundled server can run with zero system dependencies.
+          $srcDir = Get-ChildItem -Path $extract -Directory | Select-Object -First 1
+          $nodeDest = "tauri-repo/src-tauri/resources/app/node"
+          New-Item -ItemType Directory -Path $nodeDest -Force | Out-Null
+          Copy-Item -Path (Join-Path $srcDir.FullName "node.exe") -Destination $nodeDest -Force
+          # Also copy npm + corepack (needed if the server does any require('npm') at runtime — usually not, but cheap insurance)
+          if (Test-Path (Join-Path $srcDir.FullName "node_modules")) {
+            Copy-Item -Path (Join-Path $srcDir.FullName "node_modules") -Destination $nodeDest -Recurse -Force
+          }
+          Write-Host "=== Bundled Node.js ==="
+          & (Join-Path $nodeDest "node.exe") --version
+          Write-Host "Node.exe size: $([math]::Round((Get-Item (Join-Path $nodeDest "node.exe")).Length / 1MB, 1)) MB"
+
       - name: Install Tauri CLI dependencies
         shell: pwsh
         working-directory: tauri-repo
