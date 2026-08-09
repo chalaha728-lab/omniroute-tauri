@@ -125,7 +125,7 @@ pub async fn startup_sequence(app: &AppHandle, state: SharedState) -> Result<()>
         s.server_handle = Some(handle);
     }
 
-    let url = format!("http://localhost:{port}/api/monitoring/health");
+    let url = format!("http://127.0.0.1:{port}/api/monitoring/health");
     let ready = wait_for_server(&url, Duration::from_secs(180)).await;
     if !ready {
         log::warn!("[OmniRoute] server readiness timed out — showing window anyway");
@@ -137,7 +137,7 @@ pub async fn startup_sequence(app: &AppHandle, state: SharedState) -> Result<()>
         let app_clone = app.clone();
         let state_clone = state.clone();
         tokio::spawn(async move {
-            let url = format!("http://localhost:{port}/api/monitoring/health");
+            let url = format!("http://127.0.0.1:{port}/api/monitoring/health");
             if wait_for_server(&url, Duration::from_secs(300)).await {
                 navigate_main_to_server(&app_clone, &state_clone).await;
             }
@@ -352,7 +352,7 @@ pub async fn restart_server(app: &AppHandle, state: SharedState) -> Result<()> {
     let new_handle = spawn_server(app, &server_env).await?;
     state::lock(&state).server_handle = Some(new_handle);
 
-    let url = format!("http://localhost:{port}/api/monitoring/health");
+    let url = format!("http://127.0.0.1:{port}/api/monitoring/health");
     let _ = wait_for_server(&url, Duration::from_secs(180)).await;
     emit_server_status(app, "running", port, None);
     navigate_main_to_server(app, &state).await;
@@ -389,9 +389,9 @@ pub async fn navigate_main_to_server(app: &AppHandle, state: &SharedState) {
             remote
         } else if s.is_dev {
             std::env::var("OMNIROUTE_DEV_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".to_string())
+                .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string())
         } else {
-            format!("http://localhost:{}", s.port)
+            format!("http://127.0.0.1:{}", s.port)
         }
     };
     log::info!("[OmniRoute] navigate_main_to_server called with url={url}");

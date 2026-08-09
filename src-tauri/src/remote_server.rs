@@ -212,7 +212,7 @@ async fn set_remote_url(
         server_env.insert("DATA_DIR".into(), data_dir.to_string_lossy().into());
         let handle = crate::server::spawn_server(app, &server_env).await?;
         state::lock(&state).server_handle = Some(handle);
-        let url = format!("http://localhost:{port}/api/monitoring/health");
+        let url = format!("http://127.0.0.1:{port}/api/monitoring/health");
         let _ = crate::server::wait_for_server(&url, std::time::Duration::from_secs(180)).await;
     }
 

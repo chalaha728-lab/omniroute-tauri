@@ -127,7 +127,7 @@ pub fn build_tray(app: &AppHandle, state: SharedState) -> tauri::Result<()> {
                 let url = if let Some(remote) = &s.remote_server_url {
                     remote.clone()
                 } else {
-                    format!("http://localhost:{}", s.port)
+                    format!("http://127.0.0.1:{}", s.port)
                 };
                 drop(s);
                 let _ = app.shell().open(url, None);
