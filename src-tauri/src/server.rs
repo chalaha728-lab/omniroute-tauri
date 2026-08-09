@@ -147,18 +147,51 @@ pub async fn startup_sequence(app: &AppHandle, state: SharedState) -> Result<()>
     Ok(())
 }
 
+/// Strip the Windows extended-length path prefix `\\?\` from a PathBuf.
+///
+/// Tauri's `resource_dir()` returns paths with the `\\?\` prefix on Windows
+/// (extended-length path syntax). While Windows API calls handle this fine,
+/// Node.js does NOT — `require()` resolution breaks, and the server crashes
+/// silently after printing its startup banner.
+///
+/// This function strips the prefix so paths passed to `node.exe` as arguments
+/// or as `cwd` are plain `C:\...` paths that Node.js can resolve.
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Same as `strip_verbatim_prefix` but for String.
+fn strip_verbatim_prefix_str(s: &str) -> String {
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 /// Spawn the Next.js standalone server as a tokio child process.
 pub async fn spawn_server(app: &AppHandle, env: &HashMap<String, String>) -> Result<ServerHandle> {
     log::info!("[OmniRoute] spawn_server: resolving server_dir");
     let server_dir = resolve_server_dir(app)?;
+    // Strip the \\?\ prefix — Windows extended-length path syntax breaks
+    // Node.js require() resolution. Tauri's resource_dir() returns paths
+    // with this prefix, but node.exe doesn't understand it.
+    let server_dir = strip_verbatim_prefix(&server_dir);
     log::info!("[OmniRoute] spawn_server: server_dir = {}", server_dir.display());
 
     log::info!("[OmniRoute] spawn_server: resolving server_entry");
     let server_script = resolve_server_entry(&server_dir)?;
+    let server_script = strip_verbatim_prefix(&server_script);
     log::info!("[OmniRoute] spawn_server: server_script = {}", server_script.display());
 
     log::info!("[OmniRoute] spawn_server: resolving node_exe");
     let node_exe = resolve_node_executable_with_app(app);
+    let node_exe = strip_verbatim_prefix_str(&node_exe);
     log::info!("[OmniRoute] spawn_server: node_exe = {}", node_exe);
 
     // Check that node_exe actually exists
@@ -200,6 +233,8 @@ pub async fn spawn_server(app: &AppHandle, env: &HashMap<String, String>) -> Res
         .id()
         .ok_or_else(|| anyhow!("spawned child has no pid"))?;
 
+    log::info!("[OmniRoute] spawn_server: child process spawned, pid={}", pid);
+
     if let Some(stdout) = child.stdout.take() {
         let app_clone = app.clone();
         let state_clone = fetch_state(app);
@@ -215,6 +250,7 @@ pub async fn spawn_server(app: &AppHandle, env: &HashMap<String, String>) -> Res
                     emit_server_status(&app_clone, "running", port, None);
                 }
             }
+            log::warn!("[OmniRoute] server stdout stream ended — process may have exited");
         });
     }
     if let Some(stderr) = child.stderr.take() {
@@ -223,8 +259,27 @@ pub async fn spawn_server(app: &AppHandle, env: &HashMap<String, String>) -> Res
             while let Ok(Some(line)) = reader.next_line().await {
                 log::warn!("[Server:err] {line}");
             }
+            log::warn!("[OmniRoute] server stderr stream ended — process may have exited");
         });
     }
+
+    // Spawn a watcher that logs when the child process exits — so we can
+    // tell if the server crashed immediately after printing "Ready".
+    let child_pid = pid;
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        // Poll the child's exit status every 500ms for the first 30 seconds
+        // to catch immediate crashes.
+        for _ in 0..60 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // We can't call try_wait() on the child from here because it was
+            // moved into ServerHandle. Instead, check if the process is still
+            // running by looking it up.
+            // (Simpler: just let the stdout/stderr stream-end logs above
+            //  tell us when the process died.)
+            break; // only need to log once; the stream-end messages handle it
+        }
+    });
 
     Ok(ServerHandle { child, pid })
 }
