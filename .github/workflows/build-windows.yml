@@ -230,14 +230,14 @@ jobs:
           }
 
           # Launch the app and watch for crashes
-          Write-Host "=== Launching OmniRoute.exe (with OMNIROUTE_SKIP_EVAL=1 for diagnosis) ==="
-          $env:OMNIROUTE_SKIP_EVAL = "1"
+          Write-Host "=== Launching OmniRoute.exe ==="
           $app = Start-Process -FilePath $exe.FullName -PassThru
           Write-Host "Started PID: $($app.Id)"
 
-          # Wait up to 30s for the process to stay alive (crash happens in ~2s)
+          # Wait up to 90s for the process to stay alive (first launch needs
+          # time for DB migrations + server boot — the smoke test env is slow)
           $alive = $true
-          for ($i = 1; $i -le 30; $i++) {
+          for ($i = 1; $i -le 90; $i++) {
             Start-Sleep -Seconds 1
             if ($app.HasExited) {
               $alive = $false
@@ -271,6 +271,19 @@ jobs:
             Where-Object { $_.Message -match "OmniRoute" } |
             Select-Object TimeCreated, Id, @{N='Msg';E={$_.Message.Substring(0, [Math]::Min(500, $_.Message.Length))}} |
             Format-List
+
+          # Read the FULL OmniRoute log file — this is the KEY diagnostic output.
+          Write-Host "=== OmniRoute log file (FULL) ==="
+          $logFile = "$env:APPDATA\omniroute\omniroute.log"
+          if (-not (Test-Path $logFile)) {
+            $logFile = "$env:USERPROFILE\.omniroute\omniroute.log"
+          }
+          if (Test-Path $logFile) {
+            Write-Host "Found log at: $logFile"
+            Get-Content $logFile
+          } else {
+            Write-Host "No log file found at $logFile"
+          }
 
           # Cleanup
           if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }

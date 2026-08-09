@@ -149,12 +149,28 @@ pub async fn startup_sequence(app: &AppHandle, state: SharedState) -> Result<()>
 
 /// Spawn the Next.js standalone server as a tokio child process.
 pub async fn spawn_server(app: &AppHandle, env: &HashMap<String, String>) -> Result<ServerHandle> {
+    log::info!("[OmniRoute] spawn_server: resolving server_dir");
     let server_dir = resolve_server_dir(app)?;
+    log::info!("[OmniRoute] spawn_server: server_dir = {}", server_dir.display());
+
+    log::info!("[OmniRoute] spawn_server: resolving server_entry");
     let server_script = resolve_server_entry(&server_dir)?;
+    log::info!("[OmniRoute] spawn_server: server_script = {}", server_script.display());
+
+    log::info!("[OmniRoute] spawn_server: resolving node_exe");
     let node_exe = resolve_node_executable_with_app(app);
+    log::info!("[OmniRoute] spawn_server: node_exe = {}", node_exe);
+
+    // Check that node_exe actually exists
+    let node_path = std::path::Path::new(&node_exe);
+    if !node_path.exists() {
+        log::error!("[OmniRoute] spawn_server: node_exe does NOT exist at {}", node_exe);
+        anyhow::bail!("node executable not found at {}", node_exe);
+    }
+    log::info!("[OmniRoute] spawn_server: node_exe exists, size = {} bytes", std::fs::metadata(&node_path).map(|m| m.len()).unwrap_or(0));
 
     log::info!(
-        "[OmniRoute] starting Next.js server: {} {} (cwd={})",
+        "[OmniRoute] spawn_server: starting Next.js server: {} {} (cwd={})",
         node_exe,
         server_script.display(),
         server_dir.display()
@@ -379,15 +395,6 @@ pub async fn navigate_main_to_server(app: &AppHandle, state: &SharedState) {
         }
     };
     log::info!("[OmniRoute] navigate_main_to_server called with url={url}");
-
-    // DIAGNOSTIC: temporarily skip eval() entirely to confirm whether eval()
-    // is the cause of the 0xC0000409 crash. If the process stays alive with
-    // this skip in place, we know eval() is the culprit and need to find a
-    // different navigation mechanism.
-    if std::env::var("OMNIROUTE_SKIP_EVAL").as_deref() == Ok("1") {
-        log::info!("[OmniRoute] OMNIROUTE_SKIP_EVAL=1 — skipping eval() navigation");
-        return;
-    }
 
     if let Some(window) = app.get_webview_window("main") {
         // Give the webview time to finish initializing.
